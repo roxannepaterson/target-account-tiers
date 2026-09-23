@@ -29,6 +29,31 @@
 
   .board{ display:grid; grid-template-columns:repeat(3, 1fr); gap:16px; align-items:start; }
   @media (max-width:900px){ .board{ grid-template-columns:1fr; } }
+  .checker-card{ background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:var(--shadow); padding:20px; }
+  .field-row{ display:flex; gap:18px; flex-wrap:wrap; }
+  .field-row .field label{ white-space:nowrap; }
+  .field{ margin-bottom:14px; }
+  .field label{ display:block; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-soft); margin-bottom:5px; }
+  .field input, .field select{ width:100%; padding:8px 9px; border:1px solid var(--line); border-radius:6px; font-size:13.5px; color:var(--ink); background:#fff; }
+  .checkbox-grid{ display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .checkbox-grid-wide{ grid-template-columns:repeat(3, minmax(140px, 1fr)); gap:10px 20px; }
+  @media (max-width:640px){ .checkbox-grid-wide{ grid-template-columns:1fr 1fr; } }
+  .checkbox-grid label{ display:flex; align-items:center; gap:6px; font-size:13px; font-weight:400; text-transform:none; letter-spacing:0; color:var(--ink); }
+  .checkbox-grid input[type=checkbox]{ width:auto; flex-shrink:0; padding:0; border:none; background:none; }
+
+  .result-block{ margin-bottom:14px; padding:12px 14px; border-radius:8px; border:1px solid var(--line); }
+  .result-block.match{ border-color:var(--promoter); background:var(--promoter-soft); }
+  .result-block.nomatch{ background:var(--neutral-soft); }
+  .result-title{ font-weight:700; font-size:13.5px; margin:0 0 6px; display:flex; justify-content:space-between; align-items:center; }
+  .result-verdict{ font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; padding:2px 8px; border-radius:10px; }
+  .result-verdict.match{ background:var(--promoter); color:#fff; }
+  .result-verdict.nomatch{ background:var(--ink-soft); color:#fff; }
+  .criterion{ font-size:12px; margin:3px 0; display:flex; gap:6px; align-items:flex-start; }
+  .criterion .tick{ flex-shrink:0; }
+  .criterion.pass .tick{ color:var(--promoter); }
+  .criterion.fail .tick{ color:var(--detractor); }
+  .best-fit-banner{ text-align:center; padding:14px; border-radius:10px; background:var(--gold); color:#fff; font-weight:700; font-size:15px; margin-bottom:14px; }
+
   .column{ background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:var(--shadow); display:flex; flex-direction:column; }
   .column-head{ padding:16px 16px 12px; border-bottom:1px solid var(--line); }
   .column-title{ font-weight:700; font-size:16px; margin:0 0 8px; }
@@ -65,6 +90,49 @@
   </div>
   <p class="status-row" id="connStatus">Connecting…</p>
   <p class="error-row" id="errorBanner"></p>
+
+  <div class="checker-card" style="margin-bottom:24px;">
+    <h2 style="font-size:18px; margin:0 0 4px;">Check a company's fit</h2>
+    <p class="sub" style="margin:0 0 20px;">Enter what you know and see which tier it fits before adding it to the board.</p>
+
+    <div class="field-row">
+      <div class="field" style="flex:2; min-width:220px;">
+        <label>Company name</label>
+        <input type="text" id="fName" placeholder="e.g. Willis Watson" />
+      </div>
+      <div class="field" style="flex:1; min-width:160px;">
+        <label>Number of UK locations</label>
+        <input type="number" id="fLocCount" min="0" placeholder="e.g. 3" />
+      </div>
+    </div>
+
+    <div class="field" style="margin-top:8px;">
+      <label>Do they have offices in any of the following cities? (tick all that apply)</label>
+      <div class="checkbox-grid checkbox-grid-wide" id="cityCheckboxes"></div>
+    </div>
+
+    <div class="field-row" style="margin-top:8px;">
+      <div class="field" style="flex:1; min-width:180px;">
+        <label>Industry</label>
+        <select id="fIndustry">
+          <option value="">Select…</option>
+          <option>Legal</option><option>Financial</option><option>Tech</option>
+          <option>Logistics</option><option>Manufacturing</option><option>Food Production</option><option>Other</option>
+        </select>
+      </div>
+      <div class="field" style="flex:1; min-width:180px;">
+        <label>Project type</label>
+        <select id="fProjectType">
+          <option value="">Select…</option>
+          <option>Full fit-out / major project</option><option>Small refurb</option><option>Office move</option><option>Furniture only</option>
+        </select>
+      </div>
+    </div>
+
+    <button class="small" id="addToBoardBtn" style="margin-top:6px;">+ Add to board at best fit</button>
+
+    <div id="resultsPanel" style="margin-top:20px;"></div>
+  </div>
 
   <div class="board" id="board"></div>
 </div>
@@ -109,6 +177,101 @@
 
   const uid = () => 'ta_' + Math.random().toString(36).slice(2,10);
   function escapeHtml(str){ const d = document.createElement('div'); d.textContent = str||''; return d.innerHTML; }
+
+  // --- Tier fit checker ---
+  const CITIES = ['Edinburgh','Glasgow','Newcastle','Leeds','Manchester','Liverpool','London','Birmingham','Bristol'];
+  const CITY_CENTRE_CITIES = ['Edinburgh','Glasgow','Newcastle','Leeds','Manchester','Liverpool'];
+
+  const cityBox = document.getElementById('cityCheckboxes');
+  CITIES.forEach(city=>{
+    const label = document.createElement('label');
+    label.innerHTML = `<input type="checkbox" value="${city}" class="cityCb" /> ${city}`;
+    cityBox.appendChild(label);
+    label.querySelector('.cityCb').addEventListener('change', ()=> renderFitResults());
+  });
+  function getSelectedCities(){
+    return Array.from(document.querySelectorAll('.cityCb:checked')).map(cb=>cb.value);
+  }
+
+  function evaluateFit(){
+    const locCount = parseInt(document.getElementById('fLocCount').value, 10) || 0;
+    const cities = getSelectedCities();
+    const industry = document.getElementById('fIndustry').value;
+    const projectType = document.getElementById('fProjectType').value;
+    const hasValue = locCount || cities.length || industry || projectType;
+
+    const t1 = [
+      { label: 'Nationwide presence (broad spread of locations)', pass: locCount >= 4 || cities.length >= 4 },
+      { label: 'Industry: Legal or Financial', pass: industry === 'Legal' || industry === 'Financial' }
+    ];
+    const t2cc = [
+      { label: 'Multiple locations (2 or more)', pass: locCount >= 2 },
+      { label: 'In a target city (Edinburgh, Glasgow, Newcastle, Leeds, Manchester or Liverpool)', pass: cities.some(c => CITY_CENTRE_CITIES.includes(c)) },
+      { label: 'Industry: Tech, Legal or Financial', pass: ['Tech','Legal','Financial'].includes(industry) }
+    ];
+    const t2bc = [
+      { label: 'Industry: Logistics, Manufacturing or Food Production', pass: ['Logistics','Manufacturing','Food Production'].includes(industry) }
+    ];
+    const t3 = [
+      { label: 'Location: Edinburgh & Glasgow only', pass: cities.length > 0 && cities.every(c => c === 'Edinburgh' || c === 'Glasgow') },
+      { label: 'Type: small refurb, office move, or furniture only', pass: ['Small refurb','Office move','Furniture only'].includes(projectType) }
+    ];
+    const allMatch = arr => arr.every(c => c.pass);
+    return {
+      hasValue,
+      tiers: [
+        { key:'tier1', label:'Tier 1: Strategic Accounts', criteria:t1, match: allMatch(t1) },
+        { key:'tier2', label:'Tier 2: Core Growth — City Centre', criteria:t2cc, match: allMatch(t2cc) },
+        { key:'tier2', label:'Tier 2: Core Growth — Blue Chip Industrial', criteria:t2bc, match: allMatch(t2bc) },
+        { key:'tier3', label:'Tier 3: Transactional Clients', criteria:t3, match: allMatch(t3) }
+      ]
+    };
+  }
+
+  function bestFit(result){
+    const matched = result.tiers.filter(t=>t.match);
+    if (!matched.length) return null;
+    if (matched.find(t=>t.key==='tier1')) return matched.find(t=>t.key==='tier1');
+    if (matched.find(t=>t.key==='tier2')) return matched.find(t=>t.key==='tier2');
+    return matched.find(t=>t.key==='tier3');
+  }
+
+  function renderFitResults(){
+    const panel = document.getElementById('resultsPanel');
+    const result = evaluateFit();
+    if (!result.hasValue){
+      panel.innerHTML = `<p style="color:var(--ink-soft); font-size:13px;">Fill in the company details to see which tier it fits.</p>`;
+      return;
+    }
+    const fit = bestFit(result);
+    let html = fit
+      ? `<div class="best-fit-banner">Best fit: ${escapeHtml(fit.label)}</div>`
+      : `<div class="best-fit-banner" style="background:var(--ink-soft);">No tier fully matched yet</div>`;
+    result.tiers.forEach(t=>{
+      html += `<div class="result-block ${t.match ? 'match' : 'nomatch'}">
+        <p class="result-title">${escapeHtml(t.label)} <span class="result-verdict ${t.match?'match':'nomatch'}">${t.match ? 'Fits' : 'Not yet'}</span></p>`;
+      t.criteria.forEach(c=>{
+        html += `<div class="criterion ${c.pass?'pass':'fail'}"><span class="tick">${c.pass ? '✓' : '✗'}</span><span>${escapeHtml(c.label)}</span></div>`;
+      });
+      html += `</div>`;
+    });
+    panel.innerHTML = html;
+  }
+
+  ['fLocCount','fIndustry','fProjectType'].forEach(id=>{
+    document.getElementById(id).addEventListener('input', renderFitResults);
+    document.getElementById(id).addEventListener('change', renderFitResults);
+  });
+  renderFitResults();
+
+  document.getElementById('addToBoardBtn').addEventListener('click', async ()=>{
+    const name = document.getElementById('fName').value.trim();
+    if (!name){ alert('Enter a company name first.'); return; }
+    const result = evaluateFit();
+    const fit = bestFit(result);
+    if (!fit){ alert('No tier fully matches yet — fill in more details, or add it to the board manually below.'); return; }
+    await saveAccount({ id: uid(), name, tier: fit.key });
+  });
 
   const TIERS = [
     {
